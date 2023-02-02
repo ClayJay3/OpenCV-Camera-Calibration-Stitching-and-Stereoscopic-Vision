@@ -127,3 +127,19 @@ dmypy.json
 
 # Pyre type checker
 .pyre/
+
+# Pipenv lock files.
+*.lock
+
+# Video and image files.
+*.jpg
+*.mp4
+*.mkv
+*.JPG
+*.jpeg
+*.png 
+*.PNG 
+*.avi
+
+# Camera Calibration Params.
+*.json
