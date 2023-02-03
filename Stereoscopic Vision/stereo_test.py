@@ -26,45 +26,8 @@ def is_valid_file(parser, arg):
     else:
         return open(arg, 'r')  # return an open file handle
 
-def showImg(img):
-    plt.imshow(cv2.cvtColor(img, cv2.COLOR_RGB2BGR))
 
-def write_ply(fn, verts, colors):
-    """
-    This method generates a point cloud file from a 3D list of points and a 2D list of colors for each pixel.
-
-    Parameters:
-    -----------
-        fn - The output file name.
-        verts - The actual points of the point cloud.
-        colors - The colors for each point.
-    Returns:
-    --------
-        Nothing
-    """
-    # Create instance variables.
-    ply_header = '''ply
-    format ascii 1.0
-    element vertex %(vert_num)d
-    property float x
-    property float y
-    property float z
-    property uchar red
-    property uchar green
-    property uchar blue
-    end_header
-    '''
-
-    # Assemble and write point cloud file.
-    verts = verts.reshape(-1, 3)
-    colors = colors.reshape(-1, 3)
-    # Attach colors to end of 3rd dimension.
-    verts = np.hstack([verts, colors])
-    with open(fn, 'wb') as f:
-        f.write((ply_header % dict(vert_num=len(verts))).encode('utf-8'))
-        np.savetxt(f, verts, fmt='%f %f %f %d %d %d ')
-
-def generate_point_cloud_from_stereo_cameras(args):
+def generate_point_cloud_from_stereo_cameras(args, calibration):
     """
     This method serves as an example method for generating a point cloud from two camera images.
 
@@ -92,6 +55,14 @@ def generate_point_cloud_from_stereo_cameras(args):
         camera2_mtx = np.array(data["camera_matrix"])
         camera2_dist = np.array(data["distortion"])
 
+    imageSize = tuple(calibration["imageSize"])
+    leftMapX = calibration["leftMapX"]
+    leftMapY = calibration["leftMapY"]
+    leftROI = tuple(calibration["leftROI"])
+    rightMapX = calibration["rightMapX"]
+    rightMapY = calibration["rightMapY"]
+    rightROI = tuple(calibration["rightROI"])
+
     # Open the camera views.
     cap1 = cv2.VideoCapture(int(args.camera_A_index[0]))
     cap2 = cv2.VideoCapture(int(args.camera_B_index[0]))
@@ -110,11 +81,21 @@ def generate_point_cloud_from_stereo_cameras(args):
     else:
         print("Failed to open second camera.")
 
-    # Creates window
-    cv2.namedWindow('stereo_disparity')
-    # Creates Trackbar with slider position and callback function
-    cv2.createTrackbar('numDisparities', 'stereo_disparity', 48, 200, (lambda: None))
-    cv2.createTrackbar('blockSize', 'stereo_disparity', 5, 200, (lambda: None))
+    # Creating an object of StereoBM algorithm
+    stereo = cv2.StereoBM_create()
+    # Create opencv namedwindow so we can use trackbars.
+    cv2.namedWindow('disp',cv2.WINDOW_NORMAL)
+    cv2.createTrackbar('numDisparities','disp',1,17,lambda: None)
+    cv2.createTrackbar('blockSize','disp',5,50,lambda: None)
+    cv2.createTrackbar('preFilterType','disp',1,1,lambda: None)
+    cv2.createTrackbar('preFilterSize','disp',2,25,lambda: None)
+    cv2.createTrackbar('preFilterCap','disp',5,62,lambda: None)
+    cv2.createTrackbar('textureThreshold','disp',10,100,lambda: None)
+    cv2.createTrackbar('uniquenessRatio','disp',15,100,lambda: None)
+    cv2.createTrackbar('speckleRange','disp',0,100,lambda: None)
+    cv2.createTrackbar('speckleWindowSize','disp',3,25,lambda: None)
+    cv2.createTrackbar('disp12MaxDiff','disp',5,25,lambda: None)
+    cv2.createTrackbar('minDisparity','disp',5,25,lambda: None)
 
     # Store start time for iterations/FPS counting.
     start_time = datetime.datetime.today().timestamp()
@@ -142,70 +123,65 @@ def generate_point_cloud_from_stereo_cameras(args):
         cv2.imshow("camera2", camera2_img)
 
         # Compute the pixel disparity map. This is the distance difference between corresponding pixels in the image.
+        # Applying stereo image rectification on the left image
+        left_nice= cv2.remap(camera1_img_gray,
+                leftMapX,
+                leftMapY,
+                cv2.INTER_LANCZOS4,
+                cv2.BORDER_CONSTANT,
+                0)
+        
+        # Applying stereo image rectification on the right image
+        right_nice= cv2.remap(camera2_img_gray,
+                rightMapX,
+                rightMapY,
+                cv2.INTER_LANCZOS4,
+                cv2.BORDER_CONSTANT,
+                0)
+    
+        # Updating the parameters based on the trackbar positions
+        numDisparities = cv2.getTrackbarPos('numDisparities','disp')*16
+        blockSize = cv2.getTrackbarPos('blockSize','disp')*2 + 5
+        preFilterType = cv2.getTrackbarPos('preFilterType','disp')
+        preFilterSize = cv2.getTrackbarPos('preFilterSize','disp')*2 + 5
+        preFilterCap = cv2.getTrackbarPos('preFilterCap','disp')
+        textureThreshold = cv2.getTrackbarPos('textureThreshold','disp')
+        uniquenessRatio = cv2.getTrackbarPos('uniquenessRatio','disp')
+        speckleRange = cv2.getTrackbarPos('speckleRange','disp')
+        speckleWindowSize = cv2.getTrackbarPos('speckleWindowSize','disp')*2
+        disp12MaxDiff = cv2.getTrackbarPos('disp12MaxDiff','disp')
+        minDisparity = cv2.getTrackbarPos('minDisparity','disp')
+        
+        # Setting the updated parameters before computing disparity map
+        stereo.setNumDisparities(numDisparities)
+        stereo.setBlockSize(blockSize)
+        stereo.setPreFilterType(preFilterType)
+        stereo.setPreFilterSize(preFilterSize)
+        stereo.setPreFilterCap(preFilterCap)
+        stereo.setTextureThreshold(textureThreshold)
+        stereo.setUniquenessRatio(uniquenessRatio)
+        stereo.setSpeckleRange(speckleRange)
+        stereo.setSpeckleWindowSize(speckleWindowSize)
+        stereo.setDisp12MaxDiff(disp12MaxDiff)
+        stereo.setMinDisparity(minDisparity)
+    
         try:
-            stereo = cv2.StereoBM_create(numDisparities=cv2.getTrackbarPos('numDisparities', 'stereo_disparity'), blockSize=cv2.getTrackbarPos('blockSize', 'stereo_disparity'))
-            disparity = stereo.compute(camera1_img_gray, camera2_img_gray)
-            plt.imshow(disparity, 'CMRmap_r')
-            plt.pause(0.05)
+        #   Calculating disparity using the StereoBM algorithm
+            disparity = stereo.compute(left_nice, right_nice)
         except Exception:
-            print("numDisparities or blackSize is invalid, try adjusting one of them.")
-
-        # # Transform the disparity map so that we can obtain depth information, to do this we need the disparity-to-depth matrix.
-        # cam1_calib_mtx = camera1_mtx[:,:3] # Left color image.
-        # cam2_calib_mtx = camera2_mtx[:,:3] # Right color image.
-        # rev_proj_matrix = np.zeros((4,4)) # To store the output.
-        # Tmat = np.array([0.54, 0., 0.])
-        # # Calculate depth matrix.
-        # cv2.stereoRectify(cameraMatrix1 = cam1_calib_mtx,cameraMatrix2 = cam2_calib_mtx,
-        #                 distCoeffs1 = 0, distCoeffs2 = 0,
-        #                 imageSize = camera1_img.shape[:2],
-        #                 R = np.identity(3), T = Tmat,
-        #                 R1 = None, R2 = None,
-        #                 P1 =  None, P2 =  None, 
-        #                 Q = rev_proj_matrix)
-
-        # # Project disparity map to 3D point cloud.
-        # points = cv2.reprojectImageTo3D(disparity, rev_proj_matrix)
-
-        # #reflect on x axis
-        # reflect_matrix = np.identity(3)
-        # reflect_matrix[0] *= -1
-        # points = np.matmul(points, reflect_matrix)
-
-        # #extract colors from image
-        # colors = cv2.cvtColor(camera1_img, cv2.COLOR_BGR2RGB)
-
-        # #filter by min disparity
-        # mask = disparity > disparity.min()
-        # out_points = points[mask]
-        # out_colors = colors[mask]
-
-        # #filter by dimension
-        # idx = np.fabs(out_points[:,0]) < 4.5
-        # out_points = out_points[idx]
-        # out_colors = out_colors.reshape(-1, 3)
-        # out_colors = out_colors[idx]
-        # # Write point cloud file.
-        # # write_ply('out.ply', points, out_colors)
-
-        # # Project points and colors onto 2D image for easy viewing.
-        # reflected_pts = np.matmul(points, reflect_matrix)
-        # projected_img,_ = cv2.projectPoints(reflected_pts, np.identity(3), np.array([0., 0., 0.]), cam2_calib_mtx[:3,:3], np.array([0., 0., 0., 0.]))
-        # projected_img = projected_img.reshape(-1, 2)
-
-        # blank_img = np.zeros(camera1_img.shape, 'uint8')
-        # img_colors = camera2_img[mask][idx].reshape(-1,3)
-
-        # for i, pt in enumerate(projected_img):
-        #     pt_x = int(pt[0])
-        #     pt_y = int(pt[1])
-        #     if pt_x > 0 and pt_y > 0:
-        #         # use the BGR format to match the original image type
-        #         col = (int(img_colors[i, 2]), int(img_colors[i, 1]), int(img_colors[i, 0]))
-        #         cv2.circle(blank_img, (pt_x, pt_y), 1, col)
-
-        # # Show point cloud image.
-        # showImg(blank_img)
+            pass
+        # NOTE: Code returns a 16bit signed single channel image,
+        # CV_16S containing a disparity map scaled by 16. Hence it 
+        # is essential to convert it to CV_32F and scale it down 16 times.
+    
+        # Converting to float32 
+        disparity = disparity.astype(np.float32)
+    
+        # Scaling down the disparity values and normalizing them 
+        disparity = (disparity/16.0 - minDisparity)/numDisparities
+    
+        # Displaying the disparity map
+        cv2.imshow("image",disparity)
 
         # Increment FPS and print.
         time_diff = datetime.datetime.today().timestamp() - start_time
@@ -218,9 +194,13 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Example Point cloud generator from two images.")
     parser.add_argument("--camera-A-params", "-a", required=True, help="Input file with two matrices containing the camera calibration for camera 1.", metavar="FILE", type=lambda x: is_valid_file(parser, x))
     parser.add_argument("--camera-B-params", "-b", required=True, help="Input file with two matrices containing the camera calibration for camera 2.", metavar="FILE", type=lambda x: is_valid_file(parser, x))
+    parser.add_argument("--stereo-camera-params", "-c", required=True, help="Input file with matrices containing the cameras' stereo calibration.", metavar="FILE", type=lambda x: is_valid_file(parser, x))
     parser.add_argument("--camera-A-index", "-i", required=True, help="The index of the first camera.")
     parser.add_argument("--camera-B-index", "-j", required=True, help="The index of the second camera.")
     args = parser.parse_args()
 
+    # Load stereo calibration for cameras.
+    calibration = np.load(args.stereo_camera_params.name, allow_pickle=False)
+
     # Start point cloud generation.
-    generate_point_cloud_from_stereo_cameras(args)
+    generate_point_cloud_from_stereo_cameras(args, calibration)
