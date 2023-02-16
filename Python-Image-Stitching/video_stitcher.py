@@ -79,7 +79,7 @@ class VideoStitcher(object):
             self.homo_matrix = matched_keypoints[1]
 
         # Apply a perspective transform to stitch the images together using the saved homography matrix.
-        output_shape = (image_a.shape[1] + image_b.shape[1], image_a.shape[0])
+        output_shape = (image_a.shape[1] + image_b.shape[1], image_a.shape[0] + image_a.shape[1])
         result = cv2.warpPerspective(image_a, self.homo_matrix, output_shape)
         result[0:image_b.shape[0], 0:image_b.shape[1]] = image_b
 
@@ -196,6 +196,49 @@ if __name__ == "__main__":
     else:
         print("Failed to open second camera.")
 
+    """ 
+    This section of code determines how much of the image needs to be cutoff to 
+    remove the black borders from undistortion.
+    """
+    # Grab initial camera images.
+    ret, img1 = cap1.read()
+    ret, img2 = cap2.read()
+    # Undistort the images from both cameras using the provided camera matrix values.
+    camera1_img = cv2.undistort(img1, camera1_mtx, camera1_dist, None, camera1_mtx_scaled)
+    camera2_img = cv2.undistort(img2, camera2_mtx, camera2_dist, None, camera2_mtx_scaled)
+
+    # Loop through both images.
+    image_crops = []
+    for img in (camera1_img, camera2_img):
+        # Get image dimensions.
+        h, w = img.shape[0], img.shape[1]
+        # Get middle row and column from image.
+        middle_row = img[h // 2]
+        middle_column = img[:, w // 2]
+        # Loop through row and find black borders.
+        x_min, x_max = 0, w
+        for i in range(w // 2):
+            # Check min row.
+            if (middle_row[(w // 2) - i] == [0, 0, 0]).all() and x_min == 0:
+                x_min = (w // 2) - i
+            # Check max row.
+            if (middle_row[(w // 2) + i] == [0, 0, 0]).all() and x_max == w:
+                x_max = (w // 2) + i
+        # Loop through column and find black borders.
+        y_min, y_max = 0, h
+        for i in range(h // 2):
+            # Check min row.
+            if (middle_column[(h // 2) - i] == [0, 0, 0]).all() and y_min == 0:
+                y_min = (h // 2) - i
+            # Check max row.
+            if (middle_column[(h // 2) + i] == [0, 0, 0]).all() and y_max == h:
+                y_max = (h // 2) + i
+
+        # Append x and y limits to list.
+        image_crops.append([x_min + 10, x_max - 10, y_min + 10, y_max - 10])
+
+    print("[INFO] Cropping images to (removes black borders): ", image_crops)
+
     # Create video stitcher.
     stitcher = VideoStitcher()
 
@@ -209,7 +252,12 @@ if __name__ == "__main__":
         camera1_img = cv2.undistort(img1, camera1_mtx, camera1_dist, None, camera1_mtx_scaled)
         camera2_img = cv2.undistort(img2, camera2_mtx, camera2_dist, None, camera2_mtx_scaled)
 
-        stitched_image = stitcher.stitch([img1, img2])
+        # Crop images.
+        cropped_images = []
+        for crop, image in zip(image_crops, [camera1_img, camera2_img]):
+            cropped_images.append(image[crop[2]:crop[3], crop[0]:crop[1]].copy())
+
+        stitched_image = stitcher.stitch(cropped_images, ratio=0.75, reproj_thresh=2.0)
 
         if cv2.waitKey(1) & 0xFF == ord('q') or not ret:
             cap1.release()
@@ -217,4 +265,4 @@ if __name__ == "__main__":
             cv2.destroyAllWindows()
             break
 
-        cv2.imshow("Result", stitched_image)
+        cv2.imshow("Result1", stitched_image)
