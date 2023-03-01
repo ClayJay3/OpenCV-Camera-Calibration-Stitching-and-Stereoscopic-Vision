@@ -8,5 +8,6 @@ opencv-python = "*"
 numpy = "*"
 imutils = "*"
 matplotlib = "*"
+opencv-contrib-python = "*"
 
 [dev-packages]
