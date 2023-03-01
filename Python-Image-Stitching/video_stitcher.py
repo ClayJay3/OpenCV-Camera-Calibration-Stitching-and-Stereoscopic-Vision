@@ -163,20 +163,36 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Calibration utility")
     parser.add_argument("--camera-A-params", "-a", required=True, help="Input file with two matrices containing the camera calibration for camera 1.", metavar="FILE", type=lambda x: is_valid_file(parser, x))
     parser.add_argument("--camera-B-params", "-b", required=True, help="Input file with two matrices containing the camera calibration for camera 2.", metavar="FILE", type=lambda x: is_valid_file(parser, x))
+    parser.add_argument('--fisheye', '-f', type=bool, default=False, help='If the camera calibrations are for fisheye lenses.')
     parser.add_argument("--camera-A-source", "-i", required=True, help="The index of the first camera.")
     parser.add_argument("--camera-B-source", "-j", required=True, help="The index of the second camera.")
     args = parser.parse_args()
 
-    # Open the camera calibrations JSON file.
-    with open(args.camera_A_params.name) as json_file:
-        data = json.load(json_file)
-        camera1_mtx = np.array(data["camera_matrix"])
-        camera1_dist = np.array(data["distortion"])
-    # Open the camera calibrations JSON file.
-    with open(args.camera_B_params.name) as json_file:
-        data = json.load(json_file)
-        camera2_mtx = np.array(data["camera_matrix"])
-        camera2_dist = np.array(data["distortion"])
+    # Check if the calibrations or formatted for fisheye cameras.
+    if not args.fisheye:
+        # Open the camera calibrations JSON file.
+        with open(args.camera_A_params.name) as json_file:
+            data = json.load(json_file)
+            camera1_mtx = np.array(data["camera_matrix"])
+            camera1_dist = np.array(data["distortion"])
+        # Open the camera calibrations JSON file.
+        with open(args.camera_B_params.name) as json_file:
+            data = json.load(json_file)
+            camera2_mtx = np.array(data["camera_matrix"])
+            camera2_dist = np.array(data["distortion"])
+    else:
+        # Open the camera calibrations JSON file.
+        with open(args.camera_A_params.name) as json_file:
+            data = json.load(json_file)
+            camera1_K = np.array(data["K_matrix"])
+            camera1_D = np.array(data["D_matrix"])
+            camera1_DIM = np.array(data["DIM"])
+        # Open the camera calibrations JSON file.
+        with open(args.camera_B_params.name) as json_file:
+            data = json.load(json_file)
+            camera2_K = np.array(data["K_matrix"])
+            camera2_D = np.array(data["D_matrix"])
+            camera2_DIM = np.array(data["DIM"])
 
     # Open the camera views.
     cap1 = cv2.VideoCapture(int(args.camera_A_source[0]))
@@ -185,14 +201,38 @@ if __name__ == "__main__":
     # Scale the camera matrix for each camera. This should allow the resolution to change without much issue.
     ret, img = cap1.read()
     if ret:
-        h, w = img.shape[:2]
-        camera1_mtx_scaled, roi = cv2.getOptimalNewCameraMatrix(camera1_mtx, camera1_dist, (w, h), 1, (w, h))
+        # Check if this is a fisheye camera.
+        if not args.fisheye:
+            # Normal Camera.
+            h, w = img.shape[:2]
+            camera1_mtx_scaled, roi = cv2.getOptimalNewCameraMatrix(camera1_mtx, camera1_dist, (w, h), 1, (w, h))
+        else:
+            # Fisheye camera.
+
+            # Zoom out some, don't crop off as much of image.
+            # camera1_K_scaled = camera1_K.copy()
+            # camera1_K_scaled[0,0]=camera1_K[0,0]/2
+            # camera1_K_scaled[1,1]=camera1_K[1,1]/2
+            # Calculate camera distortion maps.
+            camera1_map1, camera1_map2 = cv2.fisheye.initUndistortRectifyMap(camera1_K, camera1_D, np.eye(3), camera1_K, camera1_DIM, cv2.CV_16SC2)
     else:
         print("Failed to open first camera.")
     ret, img = cap2.read()
     if ret:
-        h, w = img.shape[:2]
-        camera2_mtx_scaled, roi = cv2.getOptimalNewCameraMatrix(camera2_mtx, camera2_dist, (w, h), 1, (w, h))
+        # Check if this is a fisheye camera.
+        if not args.fisheye:
+            # Normal camera.
+            h, w = img.shape[:2]
+            camera2_mtx_scaled, roi = cv2.getOptimalNewCameraMatrix(camera2_mtx, camera2_dist, (w, h), 1, (w, h))
+        else:
+            # Fisheye camera.
+
+            # Zoom out some, don't crop off as much of image.
+            # camera2_K_scaled = camera2_K.copy()
+            # camera2_K_scaled[0,0]=camera2_K[0,0]/2
+            # camera2_K_scaled[1,1]=camera2_K[1,1]/2
+            # Calculate camera distortion maps.
+            camera2_map1, camera2_map2 = cv2.fisheye.initUndistortRectifyMap(camera2_K, camera2_D, np.eye(3), camera2_K, camera2_DIM, cv2.CV_16SC2)
     else:
         print("Failed to open second camera.")
 
@@ -203,61 +243,83 @@ if __name__ == "__main__":
     # Grab initial camera images.
     ret, img1 = cap1.read()
     ret, img2 = cap2.read()
-    # Undistort the images from both cameras using the provided camera matrix values.
-    camera1_img = cv2.undistort(img1, camera1_mtx, camera1_dist, None, camera1_mtx_scaled)
-    camera2_img = cv2.undistort(img2, camera2_mtx, camera2_dist, None, camera2_mtx_scaled)
+    # Check if we are using fisheye cameras.
+    camera1_img, camera2_img = None, None
+    if not args.fisheye:
+        # Undistort the images from both cameras using the provided camera matrix values.
+        camera1_img = cv2.undistort(img1, camera1_mtx, camera1_dist, None, camera1_mtx_scaled)
+        camera2_img = cv2.undistort(img2, camera2_mtx, camera2_dist, None, camera2_mtx_scaled)
 
-    # Loop through both images.
-    image_crops = []
-    for img in (camera1_img, camera2_img):
-        # Get image dimensions.
-        h, w = img.shape[0], img.shape[1]
-        # Get middle row and column from image.
-        middle_row = img[h // 2]
-        middle_column = img[:, w // 2]
-        # Loop through row and find black borders.
-        x_min, x_max = 0, w
-        for i in range(w // 2):
-            # Check min row.
-            if (middle_row[(w // 2) - i] == [0, 0, 0]).all() and x_min == 0:
-                x_min = (w // 2) - i
-            # Check max row.
-            if (middle_row[(w // 2) + i] == [0, 0, 0]).all() and x_max == w:
-                x_max = (w // 2) + i
-        # Loop through column and find black borders.
-        y_min, y_max = 0, h
-        for i in range(h // 2):
-            # Check min row.
-            if (middle_column[(h // 2) - i] == [0, 0, 0]).all() and y_min == 0:
-                y_min = (h // 2) - i
-            # Check max row.
-            if (middle_column[(h // 2) + i] == [0, 0, 0]).all() and y_max == h:
-                y_max = (h // 2) + i
+        # Loop through both images.
+        image_crops = []
+        for img in (camera1_img, camera2_img):
+            # Get image dimensions.
+            h, w = img.shape[0], img.shape[1]
+            # Get middle row and column from image.
+            middle_row = img[h // 2]
+            middle_column = img[:, w // 2]
+            # Loop through row and find black borders.
+            x_min, x_max = 0, w
+            for i in range(w // 2):
+                # Check min row.
+                if (middle_row[(w // 2) - i] == [0, 0, 0]).all() and x_min == 0:
+                    x_min = (w // 2) - i
+                # Check max row.
+                if (middle_row[(w // 2) + i] == [0, 0, 0]).all() and x_max == w:
+                    x_max = (w // 2) + i
+            # Loop through column and find black borders.
+            y_min, y_max = 0, h
+            for i in range(h // 2):
+                # Check min row.
+                if (middle_column[(h // 2) - i] == [0, 0, 0]).all() and y_min == 0:
+                    y_min = (h // 2) - i
+                # Check max row.
+                if (middle_column[(h // 2) + i] == [0, 0, 0]).all() and y_max == h:
+                    y_max = (h // 2) + i
 
-        # Append x and y limits to list.
-        image_crops.append([x_min + 10, x_max - 10, y_min + 10, y_max - 10])
+            # Append x and y limits to list.
+            image_crops.append([x_min + 10, x_max - 10, y_min + 10, y_max - 10])
 
-    print("[INFO] Cropping images to (removes black borders): ", image_crops)
+        print("[INFO] Cropping images to (removes black borders): ", image_crops)
+    else:
+        # Undistort the images from both cameras using the provided camera matrix values for fisheye.
+        camera1_img = cv2.remap(img1, camera1_map1, camera1_map2, interpolation=cv2.INTER_LINEAR, borderMode=cv2.BORDER_CONSTANT)
+        camera2_img = cv2.remap(img2, camera2_map1, camera2_map2, interpolation=cv2.INTER_LINEAR, borderMode=cv2.BORDER_CONSTANT)
 
     # Create video stitcher.
     stitcher = VideoStitcher()
 
     # Main loop.
     while True:
+        # Create instance variables.
+        cropped_images = []
+
         # Grab updated camera images.
         ret, img1 = cap1.read()
         ret, img2 = cap2.read()
 
-        # Undistort the images from both cameras using the provided camera matrix values.
-        camera1_img = cv2.undistort(img1, camera1_mtx, camera1_dist, None, camera1_mtx_scaled)
-        camera2_img = cv2.undistort(img2, camera2_mtx, camera2_dist, None, camera2_mtx_scaled)
+        # Check if we are using fisheye cameras.
+        camera1_img, camera2_img = None, None
+        if not args.fisheye:
+            # Undistort the images from both cameras using the provided camera matrix values.
+            camera1_img = cv2.undistort(img1, camera1_mtx, camera1_dist, None, camera1_mtx_scaled)
+            camera2_img = cv2.undistort(img2, camera2_mtx, camera2_dist, None, camera2_mtx_scaled)
 
-        # Crop images.
-        cropped_images = []
-        for crop, image in zip(image_crops, [camera1_img, camera2_img]):
-            cropped_images.append(image[crop[2]:crop[3], crop[0]:crop[1]].copy())
+            # Crop images.
+            for crop, image in zip(image_crops, [camera1_img, camera2_img]):
+                cropped_images.append(image[crop[2]:crop[3], crop[0]:crop[1]].copy())
+        else:
+            # Undistort the images from both cameras using the provided camera matrix values for fisheye.
+            camera1_img = cv2.remap(img1, camera1_map1, camera1_map2, interpolation=cv2.INTER_LINEAR, borderMode=cv2.BORDER_CONSTANT)
+            camera2_img = cv2.remap(img2, camera2_map1, camera2_map2, interpolation=cv2.INTER_LINEAR, borderMode=cv2.BORDER_CONSTANT)
+            # camera1_img = img1
+            # camera2_img = img2
 
-        stitched_image = stitcher.stitch(cropped_images, ratio=0.75, reproj_thresh=2.0)
+            # Don't need to crop images.
+            cropped_images.append(camera1_img)
+            cropped_images.append(camera2_img)
+
+        stitched_image = stitcher.stitch(cropped_images, ratio=0.75, reproj_thresh=2.5)
 
         if cv2.waitKey(1) & 0xFF == ord('q') or not ret:
             cap1.release()
