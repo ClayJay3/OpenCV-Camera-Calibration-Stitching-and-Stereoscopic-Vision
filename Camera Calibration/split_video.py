@@ -37,7 +37,7 @@ def split(image_divisor):
 		else:
 			print("\nSplit and stored a total of " + str(frames) + " of the " + str(x) + " images.")
 			break
-
+.
 if __name__ == '__main__':
 	# Create arguments.
 	parser = argparse.ArgumentParser(description='Video Split Untility')
