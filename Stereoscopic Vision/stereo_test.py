@@ -108,8 +108,9 @@ def generate_point_cloud_from_stereo_cameras(args, calibration):
         ret, img2 = cap2.read()
 
         # Undistort the images from both cameras using the provided camera matrix values.
-        camera1_img = cv2.undistort(img1, camera1_mtx, camera1_dist, None, camera1_mtx_scaled)
-        camera2_img = cv2.undistort(img2, camera2_mtx, camera2_dist, None, camera2_mtx_scaled)
+        # NOTE: This might not be needed. Stereo remap might do this on its own given the parameters. Undistoring twice is probably my issue.
+        # camera1_img = cv2.undistort(img1, camera1_mtx, camera1_dist, None, camera1_mtx_scaled)
+        # camera2_img = cv2.undistort(img2, camera2_mtx, camera2_dist, None, camera2_mtx_scaled)
         camera1_img_gray = cv2.cvtColor(camera1_img, cv2.COLOR_BGR2GRAY)
         camera2_img_gray = cv2.cvtColor(camera2_img, cv2.COLOR_BGR2GRAY)
 

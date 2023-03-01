@@ -283,4 +283,7 @@ if __name__ == "__main__":
 
         # Save stereo params to file.
         np.savez_compressed("./stereo_params", imageSize=image_size, leftMapX=leftMapX, leftMapY=leftMapY, leftROI=leftROI, rightMapX=rightMapX, rightMapY=rightMapY, rightROI=rightROI)
+        # Writing JSON data
+        with open("./stereo_params.json", 'w') as f:
+            json.dump({"image_size": image_size, "leftMapX": leftMapX, "leftMapY": leftMapY, "leftROI": leftROI, "rightMapX": rightMapX, "rightMapY": rightMapY, "rightROI": rightROI}, f)
 
