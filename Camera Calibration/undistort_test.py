@@ -48,11 +48,11 @@ def undistort(args):
 			# Print text with error is aspect ratios aren't the same.
 			assert dim[0]/dim[1] == DIM[0]/DIM[1], "Image to undistort needs to have same aspect ratio as the ones used in calibration"
 			# This is how scaled_K, dim1 and balance are used to determine the final K used to un-distort image. OpenCV documentation failed to make this clear.
-			K_scaled = K.copy()
-			K_scaled[0,0]=K[0,0]/2
-			K_scaled[1,1]=K[1,1]/2
+			# K_scaled = K.copy()
+			# K_scaled[0,0]=K[0,0]/2
+			# K_scaled[1,1]=K[1,1]/2
 			# Find optimal camera matrix and undistort.
-			map1, map2 = cv2.fisheye.initUndistortRectifyMap(K, D, np.eye(3), K_scaled, dim, cv2.CV_16SC2)
+			map1, map2 = cv2.fisheye.initUndistortRectifyMap(K, D, np.eye(3), K, dim, cv2.CV_16SC2)
 			dst = cv2.remap(img, map1, map2, interpolation=cv2.INTER_LINEAR, borderMode=cv2.BORDER_CONSTANT)
 		
 		if cv2.waitKey(1) & 0xFF == ord('q') or ret==False :

@@ -85,7 +85,8 @@ class CameraCalibration(object):
             return (ret, mtx.tolist(), dist.tolist(), rvecs, tvecs)
         else:
             # Fisheye Camera.
-            calibration_flags = cv2.fisheye.CALIB_RECOMPUTE_EXTRINSIC+cv2.fisheye.CALIB_CHECK_COND+cv2.fisheye.CALIB_FIX_SKEW
+            # calibration_flags = cv2.fisheye.CALIB_RECOMPUTE_EXTRINSIC+cv2.fisheye.CALIB_CHECK_COND+cv2.fisheye.CALIB_FIX_SKEW
+            calibration_flags = cv2.fisheye.CALIB_RECOMPUTE_EXTRINSIC+cv2.fisheye.CALIB_FIX_SKEW
             N_OK = len(objpoints)
             K = np.zeros((3, 3))
             D = np.zeros((4, 1))

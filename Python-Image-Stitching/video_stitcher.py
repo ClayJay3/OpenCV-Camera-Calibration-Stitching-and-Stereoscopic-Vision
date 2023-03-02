@@ -1,13 +1,10 @@
-import time
 import cv2
 import numpy
 import os.path
-import math
 import argparse
 import json
-import logging
-from pathlib import Path
 import numpy as np
+import datetime
 
 
 def is_valid_file(parser, arg):
@@ -53,7 +50,7 @@ class VideoStitcher(object):
         -----------
             images - A list of image images to stitch together.
             ratio - The ratio to multiply the difference between the matches by.
-            reproj_thresh - The pixel thresh to give the OpenCV match_keypoints function.
+            reproj_thresh - The pixel thresh to give the OpenCV matchkeypoints function.
 
         Returns:
         --------
@@ -79,9 +76,25 @@ class VideoStitcher(object):
             self.homo_matrix = matched_keypoints[1]
 
         # Apply a perspective transform to stitch the images together using the saved homography matrix.
-        output_shape = (image_a.shape[1] + image_b.shape[1], image_a.shape[0] + image_a.shape[1])
-        result = cv2.warpPerspective(image_a, self.homo_matrix, output_shape)
-        result[0:image_b.shape[0], 0:image_b.shape[1]] = image_b
+        output_shape = (image_a.shape[1] + image_b.shape[1], image_a.shape[0] + image_b.shape[1])
+        tranformed_image = cv2.warpPerspective(image_a, self.homo_matrix, output_shape, borderMode=cv2.BORDER_CONSTANT, borderValue=(0, 0, 0))
+
+        # Get a mask of the tranformed image.
+        img_gray = cv2.cvtColor(tranformed_image, cv2.COLOR_BGR2GRAY)
+        tranformed_mask = numpy.zeros(shape=img_gray.shape, dtype=np.uint8)
+        tranformed_mask = np.expand_dims(np.where(img_gray == 0, 255, tranformed_mask), axis=2)
+        # Erode the mask to prevent black stitch lines.
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+        tranformed_mask = cv2.morphologyEx(tranformed_mask, cv2.MORPH_DILATE, kernel)
+
+        # Resize image_b to match the transformed image_a res.
+        image_b = cv2.copyMakeBorder(image_b, top=0, bottom=(output_shape[1] - image_b.shape[0]), left=0, right=(output_shape[0] - image_b.shape[1]), borderType=cv2.BORDER_CONSTANT)
+        cv2.imshow("test", image_b)
+
+        # Perform bitwise AND on the untransformed image to prepare for overlaying transformed image.
+        image_b = cv2.bitwise_and(image_b, image_b, mask=tranformed_mask)
+        # Perform bitwise OR to stitch the two images together.
+        result = cv2.bitwise_or(image_b, tranformed_image)
 
         # Return the stitched image
         return result
@@ -122,7 +135,7 @@ class VideoStitcher(object):
             features_a - Extracted features from the first image.
             features_b - Extracted features from the second image.
             ratio - The ratio to multiply the difference between the matches by.
-            reproj_thresh - The pixel thresh to give the OpenCV match_keypoints function.
+            reproj_thresh - The pixel thresh to give the OpenCV matchkeypoints function.
 
         Returns:
         --------
@@ -134,13 +147,13 @@ class VideoStitcher(object):
         """
         # Compute the raw matches and initialize the list of actual matches.
         matcher = cv2.DescriptorMatcher_create("BruteForce")
-        raw_matches = matcher.knnMatch(features_a, features_b, k=2)
+        rawmatches = matcher.knnMatch(features_a, features_b, k=2)
         matches = []
 
-        for raw_match in raw_matches:
+        for rawmatch in rawmatches:
             # Ensure the distance is within a certain ratio of each other. (i.e. Lowe's ratio test)
-            if len(raw_match) == 2 and raw_match[0].distance < raw_match[1].distance * ratio:
-                matches.append((raw_match[0].trainIdx, raw_match[0].queryIdx))
+            if len(rawmatch) == 2 and rawmatch[0].distance < rawmatch[1].distance * ratio:
+                matches.append((rawmatch[0].trainIdx, rawmatch[0].queryIdx))
 
         # Computing a homography requires at least 4 matches.
         if len(matches) > 4:
@@ -156,6 +169,40 @@ class VideoStitcher(object):
 
         # No homography could be computed.
         return None
+
+    def project_onto_cylinder(self, img, K_matrix):
+        """
+        Projects the given image onto a cylinder, this makes stitching of cameras less planar.
+
+        Parameters:
+        -----------
+            img - The user given image to project.
+            K_matrix - The K matrix from camera calibration.
+
+        Returns:
+        --------
+            transformed_image - The resulting image.
+        """
+        img_h, img_w = img.shape[:2]
+        # Pixel coordinates.
+        y_i, x_i = np.indices((img_h, img_w))
+        X = np.stack([x_i, y_i, np.ones_like(x_i)], axis=-1).reshape(img_h * img_w, 3)  # To Homography with the given K matrix.
+        K_inv = np.linalg.inv(K_matrix)
+        X = K_inv.dot(X.T).T    # Normalized coords.
+        # Calculate cylindrical coords. (sin\theta, h, cos\theta)
+        A = np.stack([np.sin(X[:, 0]), X[:, 1], np.cos(X[:, 0])], axis=-1).reshape(img_h * img_w, 3)
+        B = K_matrix.dot(A.T).T    # Project back to image-pixels plane.
+        # Back from homog coords.
+        B = B[:, :-1] / B[:, [-1]]
+        # Make sure warp coords only within image bounds.
+        B[(B[:, 0] < 0) | (B[:, 0] >= img_w) | (B[:, 1] < 0) | (B[:, 1] >= img_h)] = -1
+        B = B.reshape(img_h, img_w, -1)
+        
+        # Tranform image onto cylinder coordinate system.
+        img = cv2.remap(img, B[:, :, 0].astype(np.float32), B[:, :, 1].astype(np.float32), cv2.INTER_AREA, borderMode=cv2.BORDER_CONSTANT)
+
+        # Warp the image according to cylindrical coords.
+        return img
 
 
 if __name__ == "__main__":
@@ -240,6 +287,9 @@ if __name__ == "__main__":
     This section of code determines how much of the image needs to be cutoff to 
     remove the black borders from undistortion.
     """
+    # Create video stitcher.
+    stitcher = VideoStitcher()
+
     # Grab initial camera images.
     ret, img1 = cap1.read()
     ret, img2 = cap2.read()
@@ -249,45 +299,48 @@ if __name__ == "__main__":
         # Undistort the images from both cameras using the provided camera matrix values.
         camera1_img = cv2.undistort(img1, camera1_mtx, camera1_dist, None, camera1_mtx_scaled)
         camera2_img = cv2.undistort(img2, camera2_mtx, camera2_dist, None, camera2_mtx_scaled)
-
-        # Loop through both images.
-        image_crops = []
-        for img in (camera1_img, camera2_img):
-            # Get image dimensions.
-            h, w = img.shape[0], img.shape[1]
-            # Get middle row and column from image.
-            middle_row = img[h // 2]
-            middle_column = img[:, w // 2]
-            # Loop through row and find black borders.
-            x_min, x_max = 0, w
-            for i in range(w // 2):
-                # Check min row.
-                if (middle_row[(w // 2) - i] == [0, 0, 0]).all() and x_min == 0:
-                    x_min = (w // 2) - i
-                # Check max row.
-                if (middle_row[(w // 2) + i] == [0, 0, 0]).all() and x_max == w:
-                    x_max = (w // 2) + i
-            # Loop through column and find black borders.
-            y_min, y_max = 0, h
-            for i in range(h // 2):
-                # Check min row.
-                if (middle_column[(h // 2) - i] == [0, 0, 0]).all() and y_min == 0:
-                    y_min = (h // 2) - i
-                # Check max row.
-                if (middle_column[(h // 2) + i] == [0, 0, 0]).all() and y_max == h:
-                    y_max = (h // 2) + i
-
-            # Append x and y limits to list.
-            image_crops.append([x_min + 10, x_max - 10, y_min + 10, y_max - 10])
-
-        print("[INFO] Cropping images to (removes black borders): ", image_crops)
     else:
         # Undistort the images from both cameras using the provided camera matrix values for fisheye.
         camera1_img = cv2.remap(img1, camera1_map1, camera1_map2, interpolation=cv2.INTER_LINEAR, borderMode=cv2.BORDER_CONSTANT)
         camera2_img = cv2.remap(img2, camera2_map1, camera2_map2, interpolation=cv2.INTER_LINEAR, borderMode=cv2.BORDER_CONSTANT)
+        camera1_img = stitcher.project_onto_cylinder(camera1_img, camera1_K)
+        camera2_img = stitcher.project_onto_cylinder(camera2_img, camera2_K)
 
-    # Create video stitcher.
-    stitcher = VideoStitcher()
+    # Loop through both images.
+    image_crops = []
+    for img in (camera1_img, camera2_img):
+        # Get image dimensions.
+        h, w = img.shape[0], img.shape[1]
+        # Get middle row and column from image.
+        middle_row = img[h // 2]
+        middle_column = img[:, w // 2]
+        # Loop through row and find black borders.
+        x_min, x_max = 0, w
+        for i in range(w // 2):
+            # Check min row.
+            if (middle_row[(w // 2) - i] == [0, 0, 0]).all() and x_min == 0:
+                x_min = (w // 2) - i
+            # Check max row.
+            if (middle_row[(w // 2) + i] == [0, 0, 0]).all() and x_max == w:
+                x_max = (w // 2) + i
+        # Loop through column and find black borders.
+        y_min, y_max = 0, h
+        for i in range(h // 2):
+            # Check min row.
+            if (middle_column[(h // 2) - i] == [0, 0, 0]).all() and y_min == 0:
+                y_min = (h // 2) - i
+            # Check max row.
+            if (middle_column[(h // 2) + i] == [0, 0, 0]).all() and y_max == h:
+                y_max = (h // 2) + i
+
+        # Append x and y limits to list.
+        image_crops.append([x_min, x_max, y_min, y_max])
+
+    print("[INFO] Cropping images to (removes black borders): ", image_crops)
+
+    # Store start time for iterations/FPS counting.
+    start_time = datetime.datetime.today().timestamp()
+    iterations = 0
 
     # Main loop.
     while True:
@@ -312,14 +365,24 @@ if __name__ == "__main__":
             # Undistort the images from both cameras using the provided camera matrix values for fisheye.
             camera1_img = cv2.remap(img1, camera1_map1, camera1_map2, interpolation=cv2.INTER_LINEAR, borderMode=cv2.BORDER_CONSTANT)
             camera2_img = cv2.remap(img2, camera2_map1, camera2_map2, interpolation=cv2.INTER_LINEAR, borderMode=cv2.BORDER_CONSTANT)
-            # camera1_img = img1
-            # camera2_img = img2
+            camera1_img = stitcher.project_onto_cylinder(camera1_img, camera1_K)
+            camera2_img = stitcher.project_onto_cylinder(camera2_img, camera2_K)
 
-            # Don't need to crop images.
-            cropped_images.append(camera1_img)
-            cropped_images.append(camera2_img)
+            # Crop images.
+            for crop, image in zip(image_crops, [camera1_img, camera2_img]):
+                cropped_images.append(image[crop[2]:crop[3], crop[0]:crop[1]].copy())
+
+        # Don't need to crop images.
+        cropped_images.append(camera1_img)
+        cropped_images.append(camera2_img)
 
         stitched_image = stitcher.stitch(cropped_images, ratio=0.75, reproj_thresh=2.5)
+        # stitched_image = np.asarray(camera1_img)
+
+        # Increment FPS and print.
+        time_diff = datetime.datetime.today().timestamp() - start_time
+        iterations += 1
+        print("FPS: ", int(iterations / time_diff))
 
         if cv2.waitKey(1) & 0xFF == ord('q') or not ret:
             cap1.release()
