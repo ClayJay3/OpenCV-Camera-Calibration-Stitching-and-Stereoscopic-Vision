@@ -131,6 +131,9 @@ dmypy.json
 # Pipenv lock files.
 *.lock
 
+# Python build files.
+*.whl
+
 # Video and image files.
 *.jpg
 *.mp4

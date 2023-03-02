@@ -341,6 +341,15 @@ if __name__ == "__main__":
     start_time = datetime.datetime.today().timestamp()
     iterations = 0
 
+    # Setup aruco library.
+    dictionary = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_4X4_50)
+    parameters = cv2.aruco.DetectorParameters()
+    parameters.markerBorderBits = 1
+    parameters.errorCorrectionRate = 1
+    detector = cv2.aruco.ArucoDetector(dictionary, parameters)
+    r_vec = None
+    t_vec = None
+
     # Main loop.
     while True:
         # Create instance variables.
@@ -376,6 +385,29 @@ if __name__ == "__main__":
         cropped_images.append(camera2_img)
 
         stitched_image = stitcher.stitch(cropped_images, ratio=0.75, reproj_thresh=2.5)
+        # stitched_image = np.asarray(camera1_img)
+
+        # Test Aruco Tag detection.
+        corners, ids, rejectedImgPoints = detector.detectMarkers(stitched_image)
+
+        # Add Tags to Tag Class Object
+        if ids is not None:
+            reg_img = cv2.aruco.drawDetectedMarkers(stitched_image, corners)
+
+            # Convert corners into 1D array of tuples.
+            imagePoints = np.asarray(corners[0][0], dtype=np.float32)
+            print(imagePoints)
+            objectPoints = np.asarray([[0, 0, 0],[10, 0, 0],[10, 10, 0],[0, 10, 0]], dtype=np.float32)
+            print(objectPoints)
+            cameraMatrix = np.asarray([[239.4694816151291, 0.0, 301.67024898194353], [0.0, 239.5116789433278, 243.12508520685762], [0.0, 0.0, 1.0]], dtype=np.float32)
+            disMatrix = np.asarray([[0, 0, 0, 0, 0]], dtype=np.float32)
+
+            # if r_vec is None:
+            (_, rotation_vector, translation_vector) = cv2.solvePnP(
+                objectPoints, imagePoints, cameraMatrix, disMatrix)
+            r_vec = rotation_vector
+            t_vec = translation_vector
+            cv2.drawFrameAxes(stitched_image, cameraMatrix, disMatrix, r_vec, t_vec, 7)
 
         # Increment FPS and print.
         time_diff = datetime.datetime.today().timestamp() - start_time
