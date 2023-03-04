@@ -407,7 +407,7 @@ if __name__ == "__main__":
                 objectPoints, imagePoints, cameraMatrix, disMatrix)
             r_vec = rotation_vector
             t_vec = translation_vector
-            cv2.drawFrameAxes(stitched_image, cameraMatrix, disMatrix, r_vec, t_vec, 7)
+            cv2.drawFrameAxes(stitched_image, cameraMatrix, disMatrix, r_vec, t_vec, 15)
 
         # Increment FPS and print.
         time_diff = datetime.datetime.today().timestamp() - start_time

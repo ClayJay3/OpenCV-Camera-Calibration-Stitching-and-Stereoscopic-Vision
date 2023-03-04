@@ -364,8 +364,10 @@ if __name__ == "__main__":
             # Undistort the images from both cameras using the provided camera matrix values for fisheye.
             camera1_img = cv2.remap(img1, camera1_map1, camera1_map2, interpolation=cv2.INTER_LINEAR, borderMode=cv2.BORDER_CONSTANT)
             camera2_img = cv2.remap(img2, camera2_map1, camera2_map2, interpolation=cv2.INTER_LINEAR, borderMode=cv2.BORDER_CONSTANT)
-            camera1_img = stitcher.project_onto_cylinder(camera1_img, camera1_K)
-            camera2_img = stitcher.project_onto_cylinder(camera2_img, camera2_K)
+            # camera1_img = stitcher.project_onto_cylinder(camera1_img, camera1_K)
+            # camera2_img = stitcher.project_onto_cylinder(camera2_img, camera2_K)
+            cv2.imshow("Undistort", camera1_img)
+            cv2.imshow("Undistort2", camera2_img)
 
             # Crop images.
             for crop, image in zip(image_crops, [camera1_img, camera2_img]):
