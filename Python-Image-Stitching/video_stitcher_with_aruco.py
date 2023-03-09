@@ -5,6 +5,7 @@ import argparse
 import json
 import numpy as np
 import datetime
+import pyzed.sl as sl
 
 
 def is_valid_file(parser, arg):
@@ -209,6 +210,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Calibration utility")
     parser.add_argument("--camera-A-params", "-a", required=True, help="Input file with two matrices containing the camera calibration for camera 1.", metavar="FILE", type=lambda x: is_valid_file(parser, x))
     parser.add_argument("--camera-B-params", "-b", required=True, help="Input file with two matrices containing the camera calibration for camera 2.", metavar="FILE", type=lambda x: is_valid_file(parser, x))
+    parser.add_argument("--camera-C-params", "-c", required=True, help="Input file with two matrices containing the camera calibration for camera 3.", metavar="FILE", type=lambda x: is_valid_file(parser, x))
     parser.add_argument('--fisheye', '-f', type=bool, default=False, help='If the camera calibrations are for fisheye lenses.')
     parser.add_argument("--camera-A-source", "-i", required=True, help="The index of the first camera.")
     parser.add_argument("--camera-B-source", "-j", required=True, help="The index of the second camera.")
@@ -226,6 +228,12 @@ if __name__ == "__main__":
             data = json.load(json_file)
             camera2_mtx = np.array(data["camera_matrix"])
             camera2_dist = np.array(data["distortion"])
+        # Open the camera calibrations JSON file.
+        if args.camera_C_params.name is not None:
+            with open(args.camera_C_params.name) as json_file:
+                data = json.load(json_file)
+                camera3_mtx = np.array(data["camera_matrix"])
+                camera3_dist = np.array(data["distortion"])
     else:
         # Open the camera calibrations JSON file.
         with open(args.camera_A_params.name) as json_file:
@@ -239,6 +247,12 @@ if __name__ == "__main__":
             camera2_K = np.array(data["K_matrix"])
             camera2_D = np.array(data["D_matrix"])
             camera2_DIM = np.array(data["DIM"])
+        # Open the camera calibrations JSON file.
+        if args.camera_C_params.name is not None:
+            with open(args.camera_C_params.name) as json_file:
+                data = json.load(json_file)
+                camera3_mtx = np.array(data["camera_matrix"])
+                camera3_dist = np.array(data["distortion"])
 
     # Open the camera views.
     cap1 = cv2.VideoCapture(int(args.camera_A_source[0]))
@@ -282,6 +296,44 @@ if __name__ == "__main__":
     else:
         print("Failed to open second camera.")
 
+    # Only attempt to open zed camera if we were given a parameter.
+    if args.camera_C_params.name is not None:
+        # Attempt to open a zed camera.
+        # Create a ZED camera object
+        zed = sl.Camera()
+        # Set configuration parameters
+        init_params = sl.InitParameters()
+        init_params.camera_resolution = sl.RESOLUTION.HD720
+        init_params.camera_fps = 30
+        # Open the camera
+        err = zed.open(init_params)
+        if err != sl.ERROR_CODE.SUCCESS:
+            print("Unable to open ZED camera.")
+            exit(-1)
+        else:
+            # Get ZED data.
+            image_size = zed.get_camera_information().camera_resolution
+            # Create custom mat for zed image.
+            image_zed = sl.Mat(image_size.width, image_size.height, sl.MAT_TYPE.U8_C4)
+                
+            if zed.grab() == sl.ERROR_CODE.SUCCESS:
+                # Check if we should grab images from the left or right camera.
+                if (args.lefteye):
+                    # A new image is available if grab() returns SUCCESS
+                    zed.retrieve_image(image_zed, sl.VIEW.LEFT) # Retrieve the left image
+                else:
+                    # A new image is available if grab() returns SUCCESS
+                    zed.retrieve_image(image_zed, sl.VIEW.RIGHT) # Retrieve the left image
+
+                # Get camera frame from zed.
+                img = image_zed.get_data()
+                img = cv2.cvtColor(img, cv2.COLOR_BGRA2BGR)
+
+                # Normal camera.
+                h, w = img.shape[:2]
+                camera3_mtx_scaled, roi = cv2.getOptimalNewCameraMatrix(camera3_mtx, camera3_dist, (w, h), 1, (w, h))
+
+
     """ 
     This section of code determines how much of the image needs to be cutoff to 
     remove the black borders from undistortion.
@@ -292,18 +344,34 @@ if __name__ == "__main__":
     # Grab initial camera images.
     ret, img1 = cap1.read()
     ret, img2 = cap2.read()
+    if zed.grab() == sl.ERROR_CODE.SUCCESS:
+        # Check if we should grab images from the left or right camera.
+        if (args.lefteye):
+            # A new image is available if grab() returns SUCCESS
+            zed.retrieve_image(image_zed, sl.VIEW.LEFT) # Retrieve the left image
+        else:
+            # A new image is available if grab() returns SUCCESS
+            zed.retrieve_image(image_zed, sl.VIEW.RIGHT) # Retrieve the left image
+
+        # Get camera frame from zed.
+        img3 = image_zed.get_data()
+        img3 = cv2.cvtColor(img3, cv2.COLOR_BGRA2BGR)
+
     # Check if we are using fisheye cameras.
     camera1_img, camera2_img = None, None
     if not args.fisheye:
         # Undistort the images from both cameras using the provided camera matrix values.
         camera1_img = cv2.undistort(img1, camera1_mtx, camera1_dist, None, camera1_mtx_scaled)
         camera2_img = cv2.undistort(img2, camera2_mtx, camera2_dist, None, camera2_mtx_scaled)
+        camera3_img = cv2.undistort(img3, camera3_mtx, camera3_dist, None, camera3_mtx_scaled)
     else:
         # Undistort the images from both cameras using the provided camera matrix values for fisheye.
         camera1_img = cv2.remap(img1, camera1_map1, camera1_map2, interpolation=cv2.INTER_LINEAR, borderMode=cv2.BORDER_CONSTANT)
         camera2_img = cv2.remap(img2, camera2_map1, camera2_map2, interpolation=cv2.INTER_LINEAR, borderMode=cv2.BORDER_CONSTANT)
+        camera3_img = cv2.undistort(img3, camera3_mtx, camera3_dist, None, camera3_mtx_scaled)
         camera1_img = stitcher.project_onto_cylinder(camera1_img, camera1_K)
         camera2_img = stitcher.project_onto_cylinder(camera2_img, camera2_K)
+        camera3_img = stitcher.project_onto_cylinder(camera3_img, camera3_mtx)
 
     # Loop through both images.
     image_crops = []
@@ -358,13 +426,27 @@ if __name__ == "__main__":
         # Grab updated camera images.
         ret, img1 = cap1.read()
         ret, img2 = cap2.read()
+        img3 = None
+        if zed.grab() == sl.ERROR_CODE.SUCCESS:
+            # Check if we should grab images from the left or right camera.
+            if (args.lefteye):
+                # A new image is available if grab() returns SUCCESS
+                zed.retrieve_image(image_zed, sl.VIEW.LEFT) # Retrieve the left image
+            else:
+                # A new image is available if grab() returns SUCCESS
+                zed.retrieve_image(image_zed, sl.VIEW.RIGHT) # Retrieve the left image
+
+            # Get camera frame from zed.
+            img3 = image_zed.get_data()
+            img3 = cv2.cvtColor(img3, cv2.COLOR_BGRA2BGR)
 
         # Check if we are using fisheye cameras.
-        camera1_img, camera2_img = None, None
+        camera1_img, camera2_img, camera3_img = None, None, None
         if not args.fisheye:
             # Undistort the images from both cameras using the provided camera matrix values.
             camera1_img = cv2.undistort(img1, camera1_mtx, camera1_dist, None, camera1_mtx_scaled)
             camera2_img = cv2.undistort(img2, camera2_mtx, camera2_dist, None, camera2_mtx_scaled)
+            camera3_img = cv2.undistort(img3, camera3_mtx, camera3_dist, None, camera3_mtx_scaled)
 
             # Crop images.
             for crop, image in zip(image_crops, [camera1_img, camera2_img]):
@@ -373,8 +455,11 @@ if __name__ == "__main__":
             # Undistort the images from both cameras using the provided camera matrix values for fisheye.
             camera1_img = cv2.remap(img1, camera1_map1, camera1_map2, interpolation=cv2.INTER_LINEAR, borderMode=cv2.BORDER_CONSTANT)
             camera2_img = cv2.remap(img2, camera2_map1, camera2_map2, interpolation=cv2.INTER_LINEAR, borderMode=cv2.BORDER_CONSTANT)
+            camera3_img = cv2.undistort(img3, camera3_mtx, camera3_dist, None, camera3_mtx_scaled)
             camera1_img = stitcher.project_onto_cylinder(camera1_img, camera1_K)
             camera2_img = stitcher.project_onto_cylinder(camera2_img, camera2_K)
+            camera3_img = stitcher.project_onto_cylinder(camera3_img, camera3_mtx)
+            cv2.imshow("img3", camera3_img)
 
             # Crop images.
             for crop, image in zip(image_crops, [camera1_img, camera2_img]):
