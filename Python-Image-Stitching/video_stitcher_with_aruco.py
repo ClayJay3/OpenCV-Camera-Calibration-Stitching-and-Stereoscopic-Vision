@@ -6,6 +6,7 @@ import json
 import numpy as np
 import datetime
 import pyzed.sl as sl
+from obstacle_detector import YOLOObstacleDetector
 
 
 def is_valid_file(parser, arg):
@@ -28,6 +29,7 @@ def is_valid_file(parser, arg):
         return open(arg, 'r')  # return an open file handle
 
 
+
 class VideoStitcher(object):
     """
     Calculate homography of both cameras and stitches their video together.
@@ -38,7 +40,8 @@ class VideoStitcher(object):
         Declares and initializes member variables and objects.
         """
         # Create member variables.
-        self.homo_matrix = None
+        self.homo_matrix = np.asarray([[ 1.20254541e+00,  1.46581672e-01,  3.97339938e+02], [ 1.32351777e-01,  1.10367117e+00, -9.12597223e+00], [ 5.45140490e-04,  1.93311732e-04,  1.00000000e+00]])
+        self.B = None
 
     def stitch(self, images, ratio=0.75, reproj_thresh=4.0):
         """
@@ -68,6 +71,7 @@ class VideoStitcher(object):
 
             # Match features between the two images
             matched_keypoints = self.calculate_homography(keypoints_a, keypoints_b, features_a, features_b, ratio, reproj_thresh)
+            print(matched_keypoints)
 
             # If the match is None, then there aren't enough matched keypoints to create a panorama.
             if matched_keypoints is None:
@@ -184,22 +188,25 @@ class VideoStitcher(object):
             transformed_image - The resulting image.
         """
         img_h, img_w = img.shape[:2]
-        # Pixel coordinates.
-        y_i, x_i = np.indices((img_h, img_w))
-        X = np.stack([x_i, y_i, np.ones_like(x_i)], axis=-1).reshape(img_h * img_w, 3)  # To Homography with the given K matrix.
-        K_inv = np.linalg.inv(K_matrix)
-        X = K_inv.dot(X.T).T    # Normalized coords.
-        # Calculate cylindrical coords. (sin\theta, h, cos\theta)
-        A = np.stack([np.sin(X[:, 0]), X[:, 1], np.cos(X[:, 0])], axis=-1).reshape(img_h * img_w, 3)
-        B = K_matrix.dot(A.T).T    # Project back to image-pixels plane.
-        # Back from homog coords.
-        B = B[:, :-1] / B[:, [-1]]
-        # Make sure warp coords only within image bounds.
-        B[(B[:, 0] < 0) | (B[:, 0] >= img_w) | (B[:, 1] < 0) | (B[:, 1] >= img_h)] = -1
-        B = B.reshape(img_h, img_w, -1)
+
+        # Check if we need to calculate B matrix for projection.
+        if self.B is None:
+            # Pixel coordinates.
+            y_i, x_i = np.indices((img_h, img_w))
+            X = np.stack([x_i, y_i, np.ones_like(x_i)], axis=-1).reshape(img_h * img_w, 3)  # To Homography with the given K matrix.
+            K_inv = np.linalg.inv(K_matrix)
+            X = K_inv.dot(X.T).T    # Normalized coords.
+            # Calculate cylindrical coords. (sin\theta, h, cos\theta)
+            A = np.stack([np.sin(X[:, 0]), X[:, 1], np.cos(X[:, 0])], axis=-1).reshape(img_h * img_w, 3)
+            B = K_matrix.dot(A.T).T    # Project back to image-pixels plane.
+            # Back from homog coords.
+            B = B[:, :-1] / B[:, [-1]]
+            # Make sure warp coords only within image bounds.
+            B[(B[:, 0] < 0) | (B[:, 0] >= img_w) | (B[:, 1] < 0) | (B[:, 1] >= img_h)] = -1
+            self.B = B.reshape(img_h, img_w, -1)
         
         # Tranform image onto cylinder coordinate system.
-        img = cv2.remap(img, B[:, :, 0].astype(np.float32), B[:, :, 1].astype(np.float32), cv2.INTER_AREA, borderMode=cv2.BORDER_CONSTANT)
+        img = cv2.remap(img, self.B[:, :, 0].astype(np.float32), self.B[:, :, 1].astype(np.float32), cv2.INTER_AREA, borderMode=cv2.BORDER_CONSTANT)
 
         # Warp the image according to cylindrical coords.
         return img
@@ -212,6 +219,7 @@ if __name__ == "__main__":
     parser.add_argument("--camera-B-params", "-b", required=True, help="Input file with two matrices containing the camera calibration for camera 2.", metavar="FILE", type=lambda x: is_valid_file(parser, x))
     parser.add_argument("--camera-C-params", "-c", required=True, help="Input file with two matrices containing the camera calibration for camera 3.", metavar="FILE", type=lambda x: is_valid_file(parser, x))
     parser.add_argument('--fisheye', '-f', type=bool, default=False, help='If the camera calibrations are for fisheye lenses.')
+    parser.add_argument('--lefteye', '-l', type=bool, default=False, help='Whether or not to use the left or right camera.')
     parser.add_argument("--camera-A-source", "-i", required=True, help="The index of the first camera.")
     parser.add_argument("--camera-B-source", "-j", required=True, help="The index of the second camera.")
     args = parser.parse_args()
@@ -358,7 +366,7 @@ if __name__ == "__main__":
         img3 = cv2.cvtColor(img3, cv2.COLOR_BGRA2BGR)
 
     # Check if we are using fisheye cameras.
-    camera1_img, camera2_img = None, None
+    camera1_img, camera2_img, camera3_img = None, None, None
     if not args.fisheye:
         # Undistort the images from both cameras using the provided camera matrix values.
         camera1_img = cv2.undistort(img1, camera1_mtx, camera1_dist, None, camera1_mtx_scaled)
@@ -375,7 +383,7 @@ if __name__ == "__main__":
 
     # Loop through both images.
     image_crops = []
-    for img in (camera1_img, camera2_img):
+    for img in (camera1_img, camera2_img, camera3_img):
         # Get image dimensions.
         h, w = img.shape[0], img.shape[1]
         # Get middle row and column from image.
@@ -418,6 +426,8 @@ if __name__ == "__main__":
     r_vec = None
     t_vec = None
 
+    yolo_detector = YOLOObstacleDetector(os.path.dirname(__file__) + "/best.pt", 640, 0.4)
+
     # Main loop.
     while True:
         # Create instance variables.
@@ -448,9 +458,15 @@ if __name__ == "__main__":
             camera2_img = cv2.undistort(img2, camera2_mtx, camera2_dist, None, camera2_mtx_scaled)
             camera3_img = cv2.undistort(img3, camera3_mtx, camera3_dist, None, camera3_mtx_scaled)
 
-            # Crop images.
-            for crop, image in zip(image_crops, [camera1_img, camera2_img]):
-                cropped_images.append(image[crop[2]:crop[3], crop[0]:crop[1]].copy())
+            # Check if camera image is not None. If not, then put zed image inbetween fisheyes.
+            if camera3_img is not None:
+                # Crop images.
+                for crop, image in zip(image_crops, [camera1_img, camera2_img, camera3_img]):
+                    cropped_images.append(image[crop[2]:crop[3], crop[0]:crop[1]].copy())
+            else:
+                # Crop images.
+                for crop, image in zip(image_crops, [camera1_img, camera2_img]):
+                    cropped_images.append(image[crop[2]:crop[3], crop[0]:crop[1]].copy())
         else:
             # Undistort the images from both cameras using the provided camera matrix values for fisheye.
             camera1_img = cv2.remap(img1, camera1_map1, camera1_map2, interpolation=cv2.INTER_LINEAR, borderMode=cv2.BORDER_CONSTANT)
@@ -458,32 +474,37 @@ if __name__ == "__main__":
             camera3_img = cv2.undistort(img3, camera3_mtx, camera3_dist, None, camera3_mtx_scaled)
             camera1_img = stitcher.project_onto_cylinder(camera1_img, camera1_K)
             camera2_img = stitcher.project_onto_cylinder(camera2_img, camera2_K)
-            camera3_img = stitcher.project_onto_cylinder(camera3_img, camera3_mtx)
-            cv2.imshow("img3", camera3_img)
 
-            # Crop images.
-            for crop, image in zip(image_crops, [camera1_img, camera2_img]):
-                cropped_images.append(image[crop[2]:crop[3], crop[0]:crop[1]].copy())
+            # Check if camera image is not None. If not, then put zed image inbetween fisheyes.
+            if camera3_img is not None:
+                # Crop images.
+                for crop, image in zip(image_crops, [camera1_img, camera2_img, camera3_img]):
+                    cropped_images.append(image[crop[2]:crop[3], crop[0]:crop[1]].copy())
+            else:
+                # Crop images.
+                for crop, image in zip(image_crops, [camera1_img, camera2_img]):
+                    cropped_images.append(image[crop[2]:crop[3], crop[0]:crop[1]].copy())
 
         # Don't need to crop images.
-        cropped_images.append(camera1_img)
-        cropped_images.append(camera2_img)
+        # cropped_images.append(camera1_img)
+        # cropped_images.append(camera2_img)
 
-        stitched_image = stitcher.stitch(cropped_images, ratio=0.75, reproj_thresh=2.5)
-        # stitched_image = np.asarray(camera1_img)
+        stitched_image = stitcher.stitch([cropped_images[1], cropped_images[0]], ratio=0.75, reproj_thresh=2.5)
+        # Run yolo.
+        yolo_detector.detect_obstacles(stitched_image)
+        object_summary = yolo_detector.track_obstacle(stitched_image)
+        cv2.imshow("Result1", stitched_image)
 
         # Test Aruco Tag detection.
-        corners, ids, rejectedImgPoints = detector.detectMarkers(stitched_image)
+        corners, ids, rejectedImgPoints = detector.detectMarkers(camera3_img)
 
         # Add Tags to Tag Class Object
         if ids is not None:
-            reg_img = cv2.aruco.drawDetectedMarkers(stitched_image, corners)
+            reg_img = cv2.aruco.drawDetectedMarkers(camera3_img, corners)
 
             # Convert corners into 1D array of tuples.
             imagePoints = np.asarray(corners[0][0], dtype=np.float32)
-            print(imagePoints)
             objectPoints = np.asarray([[0, 0, 0],[10, 0, 0],[10, 10, 0],[0, 10, 0]], dtype=np.float32)
-            print(objectPoints)
             cameraMatrix = np.asarray([[239.4694816151291, 0.0, 301.67024898194353], [0.0, 239.5116789433278, 243.12508520685762], [0.0, 0.0, 1.0]], dtype=np.float32)
             disMatrix = np.asarray([[0, 0, 0, 0, 0]], dtype=np.float32)
 
@@ -492,17 +513,17 @@ if __name__ == "__main__":
                 objectPoints, imagePoints, cameraMatrix, disMatrix)
             r_vec = rotation_vector
             t_vec = translation_vector
-            cv2.drawFrameAxes(stitched_image, cameraMatrix, disMatrix, r_vec, t_vec, 15)
+            cv2.drawFrameAxes(camera3_img, cameraMatrix, disMatrix, r_vec, t_vec, 15)
+
+        cv2.imshow("Aruco", camera3_img)
 
         # Increment FPS and print.
         time_diff = datetime.datetime.today().timestamp() - start_time
         iterations += 1
-        print("FPS: ", int(iterations / time_diff))
+        # print("FPS: ", int(iterations / time_diff))
 
         if cv2.waitKey(1) & 0xFF == ord('q') or not ret:
             cap1.release()
             cap2.release()
             cv2.destroyAllWindows()
             break
-
-        cv2.imshow("Result1", stitched_image)
